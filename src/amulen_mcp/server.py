@@ -12,6 +12,8 @@ Configuración (variables de entorno):
 
 from __future__ import annotations
 
+import mimetypes
+from pathlib import Path
 from typing import Any, Literal
 
 from mcp.server.fastmcp import FastMCP
@@ -301,6 +303,76 @@ async def amulen_update_checklist_item(
 async def amulen_delete_checklist_item(project_slug: str, board_slug: str, task_slug: str, item_id: int) -> dict:
     """Delete a checklist item from a task."""
     return await _call("delete", f"{_task_path(project_slug, board_slug, task_slug)}/checklist/{int(item_id)}")
+
+
+# --- Adjuntos (evidencia) -------------------------------------------------
+
+MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+
+
+@mcp.tool(annotations=READ)
+async def amulen_list_attachments(project_slug: str, board_slug: str, task_slug: str) -> dict:
+    """List a task's attachments (id, file name, content type, size)."""
+    return await _call("get", f"{_task_path(project_slug, board_slug, task_slug)}/adjuntos")
+
+
+@mcp.tool(annotations=WRITE)
+async def amulen_upload_attachment(
+    project_slug: str,
+    board_slug: str,
+    task_slug: str,
+    file_path: str | None = None,
+    nombre: str | None = None,
+    contenido_texto: str | None = None,
+) -> dict:
+    """Attach evidence to a task (max 25 MB).
+
+    Either file_path: a local file (screenshot, PDF, log, zip...) on this machine; nombre optionally renames it.
+    Or nombre + contenido_texto: a text document you write (e.g. "evidencia.md" with a summary of the work done).
+    """
+    path = _task_path(project_slug, board_slug, task_slug) + "/adjuntos"
+    if file_path:
+        local = Path(file_path).expanduser()
+        if not local.is_file():
+            raise ToolError(f"No existe el archivo: {local}")
+        size = local.stat().st_size
+        if size > MAX_UPLOAD_BYTES:
+            raise ToolError(f"too_large: {local.name} pesa {size / 1048576:.1f} MB (máximo 25 MB)")
+        filename = nombre or local.name
+        content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        client = _get_client()
+        try:
+            return await client.upload(path, filename=filename, content=local.read_bytes(), content_type=content_type)
+        except AmulenError as e:
+            raise ToolError(str(e)) from e
+    if nombre and contenido_texto is not None:
+        return await _call("post", path, json={"nombre": nombre, "contenido_texto": contenido_texto})
+    raise ToolError("Indica file_path, o bien nombre + contenido_texto")
+
+
+@mcp.tool(annotations=WRITE)
+async def amulen_download_attachment(
+    project_slug: str, board_slug: str, task_slug: str, attachment_id: int, destino: str | None = None
+) -> dict:
+    """Download a task attachment to a local folder (default: ~/Downloads/amulen/<task_slug>/).
+    Returns the saved path so you can open or analyze the file. Never overwrites existing files."""
+    client = _get_client()
+    try:
+        content, filename = await client.download(
+            f"{_task_path(project_slug, board_slug, task_slug)}/adjuntos/{int(attachment_id)}"
+        )
+    except AmulenError as e:
+        raise ToolError(str(e)) from e
+    folder = Path(destino).expanduser() if destino else Path.home() / "Downloads" / "amulen" / task_slug
+    folder.mkdir(parents=True, exist_ok=True)
+    safe_name = Path(filename or f"adjunto-{attachment_id}").name or f"adjunto-{attachment_id}"
+    target = folder / safe_name
+    n = 1
+    while target.exists():
+        target = folder / f"{Path(safe_name).stem} ({n}){Path(safe_name).suffix}"
+        n += 1
+    target.write_bytes(content)
+    return {"ruta": str(target), "bytes": len(content)}
 
 
 def main() -> None:

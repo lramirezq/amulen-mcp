@@ -64,6 +64,8 @@ con una redirección y la herramienta lo explica.
 | `amulen_create_task` / `amulen_update_task` | Crear / editar (incluye mover de estado y registrar horas reales) |
 | `amulen_add_comment` | Comentar una tarea |
 | `amulen_add_checklist_items` / `amulen_update_checklist_item` / `amulen_delete_checklist_item` | Checklist |
+| `amulen_upload_attachment` | Adjuntar evidencia: un archivo local (`file_path`) o un texto generado (`nombre` + `contenido_texto`). Máx. 25 MB |
+| `amulen_list_attachments` / `amulen_download_attachment` | Ver los adjuntos de una tarea y descargarlos (por defecto a `~/Downloads/amulen/<tarea>/`, sin sobrescribir) |
 
 ## Desarrollo
 

@@ -110,7 +110,76 @@ async def test_todas_las_herramientas_registradas():
         "amulen_list_boards", "amulen_get_board", "amulen_create_board", "amulen_list_tasks",
         "amulen_get_task", "amulen_create_task", "amulen_update_task", "amulen_add_comment",
         "amulen_add_checklist_items", "amulen_update_checklist_item", "amulen_delete_checklist_item",
+        "amulen_list_attachments", "amulen_upload_attachment", "amulen_download_attachment",
     }
     assert esperadas <= set(tools)
     assert tools["amulen_my_tasks"].annotations.readOnlyHint is True
     assert tools["amulen_delete_checklist_item"].annotations.destructiveHint is True
+
+
+async def test_subir_archivo_local_multipart(fake, tmp_path):
+    rec = fake({("POST", "/api/v1/proyectos/p/tableros/b/tareas/t/adjuntos"): (201, {"data": {"id": 7, "nombre": "captura.png"}})})
+    f = tmp_path / "captura.png"
+    f.write_bytes(b"\x89PNG fake")
+    result = await server.amulen_upload_attachment("p", "b", "t", file_path=str(f))
+    assert result["data"]["id"] == 7
+    req = rec.requests[0]
+    assert req.headers["content-type"].startswith("multipart/form-data")
+    assert b'name="archivo"; filename="captura.png"' in req.content
+    assert b"Content-Type: image/png" in req.content
+    assert b"\x89PNG fake" in req.content
+
+
+async def test_subir_texto_generado(fake):
+    rec = fake({("POST", "/api/v1/proyectos/p/tableros/b/tareas/t/adjuntos"): (201, {"data": {"id": 8}})})
+    await server.amulen_upload_attachment("p", "b", "t", nombre="evidencia.md", contenido_texto="# Hecho")
+    assert json.loads(rec.requests[0].content) == {"nombre": "evidencia.md", "contenido_texto": "# Hecho"}
+
+
+async def test_subir_valida_archivo_y_tamano(fake, tmp_path, monkeypatch):
+    rec = fake({})
+    with pytest.raises(ToolError, match="No existe"):
+        await server.amulen_upload_attachment("p", "b", "t", file_path=str(tmp_path / "nada.png"))
+    grande = tmp_path / "grande.bin"
+    grande.write_bytes(b"x" * 11)
+    monkeypatch.setattr(server, "MAX_UPLOAD_BYTES", 10)
+    with pytest.raises(ToolError, match="too_large"):
+        await server.amulen_upload_attachment("p", "b", "t", file_path=str(grande))
+    with pytest.raises(ToolError, match="file_path"):
+        await server.amulen_upload_attachment("p", "b", "t")
+    assert rec.requests == []
+
+
+async def test_descargar_sin_sobrescribir(tmp_path):
+    def handler(request):
+        return httpx.Response(200, content=b"datos", headers={"content-disposition": 'attachment; filename="log.txt"'})
+
+    server.set_client(AmulenClient(Settings("https://acme.3htp.cloud", "amu_x"), transport=httpx.MockTransport(handler)))
+    try:
+        r1 = await server.amulen_download_attachment("p", "b", "t", 5, destino=str(tmp_path))
+        r2 = await server.amulen_download_attachment("p", "b", "t", 5, destino=str(tmp_path))
+    finally:
+        server.set_client(None)
+    assert r1["ruta"].endswith("log.txt") and r2["ruta"].endswith("log (1).txt")
+    assert (tmp_path / "log.txt").read_bytes() == b"datos"
+
+
+async def test_descarga_no_escapa_de_la_carpeta(tmp_path):
+    def handler(request):
+        return httpx.Response(200, content=b"x", headers={"content-disposition": 'attachment; filename="../../etc/evil"'})
+
+    server.set_client(AmulenClient(Settings("https://acme.3htp.cloud", "amu_x"), transport=httpx.MockTransport(handler)))
+    try:
+        r = await server.amulen_download_attachment("p", "b", "t", 1, destino=str(tmp_path))
+    finally:
+        server.set_client(None)
+    assert r["ruta"] == str(tmp_path / "evil")
+
+
+async def test_bloqueo_del_waf_se_identifica(fake):
+    def handler(request):
+        return httpx.Response(403, text="<html>403 Forbidden</html>", headers={"server": "awselb/2.0"})
+
+    server.set_client(AmulenClient(Settings("https://acme.3htp.cloud", "amu_x"), transport=httpx.MockTransport(handler)))
+    with pytest.raises(ToolError, match="blocked_by_waf"):
+        await server.amulen_list_attachments("p", "b", "t")

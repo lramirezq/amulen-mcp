@@ -5,7 +5,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import quote
+import re
+from urllib.parse import quote, unquote
 
 import httpx
 
@@ -69,32 +70,58 @@ class AmulenClient:
     async def aclose(self) -> None:
         await self._http.aclose()
 
-    async def request(self, method: str, path: str, *, params: dict | None = None, json: dict | None = None) -> Any:
-        params = {k: v for k, v in (params or {}).items() if v is not None}
+    async def _send(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
         try:
-            resp = await self._http.request(method, path, params=params, json=json)
+            resp = await self._http.request(method, path, **kwargs)
         except httpx.TimeoutException as e:
             raise AmulenError("timeout", f"AMULEN no respondió a tiempo ({e})") from e
         except httpx.HTTPError as e:
             raise AmulenError("connection", f"No se pudo conectar con AMULEN: {e}") from e
 
+        self._raise_for_redirect(resp)
+        if not resp.is_success:
+            self._raise_api_error(resp)
+        return resp
+
+    def _raise_for_redirect(self, resp: httpx.Response) -> None:
         if resp.status_code in (301, 302, 303, 307, 308):
             raise AmulenError(
                 "redirect",
                 f"AMULEN redirigió a {resp.headers.get('location')}: revisa AMULEN_BASE_URL (debe ser el subdominio de tu tenant)",
                 resp.status_code,
             )
+
+    @staticmethod
+    def _raise_api_error(resp: httpx.Response) -> None:
         try:
             body = resp.json()
         except ValueError:
             body = None
-
-        if resp.is_success:
-            return body
-        err = (body or {}).get("error") if isinstance(body, dict) else None
-        if err:
+        err = body.get("error") if isinstance(body, dict) else None
+        if isinstance(err, dict):
             raise AmulenError(err.get("code", "error"), err.get("message", ""), resp.status_code, err.get("details"))
+        if resp.status_code == 403 and "awselb" in resp.headers.get("server", ""):
+            raise AmulenError("blocked_by_waf", "El WAF del balanceador bloqueó la petición (no llegó a AMULEN)", 403)
         raise AmulenError("http_error", f"HTTP {resp.status_code}: {resp.text[:200]}", resp.status_code)
+
+    async def request(self, method: str, path: str, *, params: dict | None = None, json: dict | None = None) -> Any:
+        params = {k: v for k, v in (params or {}).items() if v is not None}
+        resp = await self._send(method, path, params=params, json=json)
+        try:
+            return resp.json()
+        except ValueError:
+            return None
+
+    async def upload(self, path: str, *, filename: str, content: bytes, content_type: str) -> Any:
+        resp = await self._send("POST", path, files={"archivo": (filename, content, content_type)})
+        return resp.json()
+
+    async def download(self, path: str) -> tuple[bytes, str | None]:
+        """Devuelve (contenido, nombre de archivo según Content-Disposition)."""
+        resp = await self._send("GET", path, headers={"Accept": "*/*"})
+        cd = resp.headers.get("content-disposition", "")
+        m = re.search(r"filename\*=UTF-8''([^;]+)", cd) or re.search(r'filename="([^"]+)"', cd)
+        return resp.content, (unquote(m.group(1)) if m else None)
 
     async def get(self, path: str, **params: Any) -> Any:
         return await self.request("GET", path, params=params)
