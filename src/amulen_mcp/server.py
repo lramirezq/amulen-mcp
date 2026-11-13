@@ -23,6 +23,7 @@ from mcp.types import ToolAnnotations
 from .client import AmulenClient, AmulenError, Settings, seg
 
 Estado = Literal["TO DO", "DOING", "DONE", "PENDING", "BACKLOG"]
+Formato = Literal["markdown", "html", "texto"]
 
 READ = ToolAnnotations(readOnlyHint=True, openWorldHint=True)
 WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=True)
@@ -35,7 +36,9 @@ mcp = FastMCP(
         "Jerarquía: proyecto (project_slug) → tablero (board_slug) → tarea (task_slug). "
         "Para 'mis tareas' usa amulen_my_tasks (una sola llamada). "
         "Los slugs que devuelven las herramientas se usan tal cual en las siguientes llamadas. "
-        "Para asignar usuarios, obtén sus ids con amulen_list_members."
+        "Para asignar usuarios, obtén sus ids con amulen_list_members. "
+        "Comentarios y descripciones se escriben en Markdown (negritas, listas, tablas, código): "
+        "AMULEN los muestra con formato. Al leer, usa los campos *_markdown."
     ),
 )
 
@@ -221,8 +224,10 @@ async def amulen_create_task(
     horas_proyectadas: float | None = None,
     puntuacion: int | None = None,
     user_ids: list[int] | None = None,
+    formato: Formato = "markdown",
 ) -> dict:
-    """Create a task. Dates YYYY-MM-DD. estado defaults to the board's first column.
+    """Create a task. descripcion is Markdown by default (formato: markdown | html | texto).
+    Dates YYYY-MM-DD. estado defaults to the board's first column.
     user_ids must be active project members (see amulen_list_members)."""
     return await _call(
         "post", _task_path(project_slug, board_slug),
@@ -230,6 +235,7 @@ async def amulen_create_task(
             "titulo": titulo, "descripcion": descripcion, "estado": estado,
             "fecha_inicio": fecha_inicio, "fecha_fin": fecha_fin,
             "horas_proyectadas": horas_proyectadas, "puntuacion": puntuacion, "user_ids": user_ids,
+            "formato": formato if descripcion is not None else None,
         }),
     )
 
@@ -248,8 +254,9 @@ async def amulen_update_task(
     horas_reales: float | None = None,
     puntuacion: int | None = None,
     user_ids: list[int] | None = None,
+    formato: Formato = "markdown",
 ) -> dict:
-    """Update a task; only the fields you pass change. Use it to move a task (estado) or log real hours (horas_reales).
+    """Update a task; only the fields you pass change. descripcion is Markdown by default. Use it to move a task (estado) or log real hours (horas_reales).
     user_ids replaces the whole assignee list."""
     return await _call(
         "patch", _task_path(project_slug, board_slug, task_slug),
@@ -257,15 +264,20 @@ async def amulen_update_task(
             "titulo": titulo, "descripcion": descripcion, "estado": estado,
             "fecha_inicio": fecha_inicio, "fecha_fin": fecha_fin, "horas_proyectadas": horas_proyectadas,
             "horas_reales": horas_reales, "puntuacion": puntuacion, "user_ids": user_ids,
+            "formato": formato if descripcion is not None else None,
         }),
     )
 
 
 @mcp.tool(annotations=WRITE)
-async def amulen_add_comment(project_slug: str, board_slug: str, task_slug: str, contenido: str) -> dict:
-    """Add a comment to a task (plain text)."""
+async def amulen_add_comment(
+    project_slug: str, board_slug: str, task_slug: str, contenido: str, formato: Formato = "markdown"
+) -> dict:
+    """Add a comment to a task. Write it in Markdown (bold, lists, tables, code blocks, links):
+    AMULEN renders it formatted. formato: markdown (default) | html | texto (no formatting)."""
     return await _call(
-        "post", f"{_task_path(project_slug, board_slug, task_slug)}/comentarios", json={"contenido": contenido}
+        "post", f"{_task_path(project_slug, board_slug, task_slug)}/comentarios",
+        json={"contenido": contenido, "formato": formato},
     )
 
 

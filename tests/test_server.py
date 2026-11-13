@@ -68,6 +68,20 @@ async def test_update_task_envia_solo_campos_presentes(fake):
     assert json.loads(rec.requests[0].content) == {"estado": "DONE", "horas_reales": 2.5}
 
 
+async def test_comentario_y_descripcion_en_markdown(fake):
+    rec = fake({
+        ("POST", "/api/v1/proyectos/p/tableros/b/tareas/t/comentarios"): (201, {"data": {}}),
+        ("PATCH", "/api/v1/proyectos/p/tableros/b/tareas/t"): (200, {"data": {}}),
+    })
+    await server.amulen_add_comment("p", "b", "t", "**Listo**")
+    await server.amulen_add_comment("p", "b", "t", "sin formato", formato="texto")
+    await server.amulen_update_task("p", "b", "t", descripcion="## Pasos")
+    bodies = [json.loads(r.content) for r in rec.requests]
+    assert bodies[0] == {"contenido": "**Listo**", "formato": "markdown"}
+    assert bodies[1]["formato"] == "texto"
+    assert bodies[2] == {"descripcion": "## Pasos", "formato": "markdown"}
+
+
 async def test_slugs_se_escapan_en_la_url(fake):
     rec = fake({})
     with pytest.raises(ToolError):
